@@ -1,0 +1,8 @@
+node_modules/
+tasks.db
+.claude/
+auth
+auth-wal
+clipboard-app/
+mac-clipboard-manager/
+.env

@@ -1,0 +1,15 @@
+{
+  "name": "task-panel",
+  "version": "1.0.0",
+  "description": "橙色系简约任务管理面板 — 主线 & 副线",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.0",
+    "sql.js": "^1.12.0"
+  }
+}
