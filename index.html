@@ -7,8 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="任务面板">
-<link rel="apple-touch-icon" href="/icon.svg">
-<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="./icon.svg">
+<link rel="manifest" href="./manifest.json">
 <title>任务面板 — 保持专注</title>
 <style>
   :root {
@@ -262,7 +262,9 @@
 (function () {
   'use strict';
 
-  const API = '/api/tasks';
+  const TURSO_URL = 'https://task-panel-chen726-a.aws-ap-northeast-1.turso.io/v2/pipeline';
+  const TURSO_TOKEN = 'eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODM3NzM1OTcsImlkIjoiMDE5ZjUxMzAtYjgwMS03ZjMwLWJiZmMtYjQyMDczMWQzYzY4Iiwia2lkIjoiVWVpQjBHcXNVQ1Jud0taMFQxX3FaVEU2Y01Ka3AtZ0RjVXFBdk9iVzg3VSIsInJpZCI6ImVlOTEyZmZkLTI1MzYtNDEwMi04ODE4LTM5OTUzMjgyMjNkNiJ9.yHc1sGmq9B6z7Mm0uJFMzkbIH9c5wWHm_SgsecOmTG-hct1RQqRiIRIH54DLODCFP6vFCKHHXPYms_8-uhRiAA';
+
   const $ = s => document.querySelector(s);
   const $$ = s => document.querySelectorAll(s);
 
@@ -277,25 +279,134 @@
     toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
   }
 
-  // ═══════════════ API ═══════════════
-  async function apiFetch(path, opts) {
-    try {
-      const res = await fetch(API + path, opts);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return await res.json();
-    } catch (e) {
-      console.error('API error:', e);
-      throw e;
-    }
+  // ═══════════════ Turso 直连云数据库 ═══════════════
+  async function tursoPipeline(requests) {
+    const res = await fetch(TURSO_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + TURSO_TOKEN,
+      },
+      body: JSON.stringify({ requests: requests }),
+    });
+    if (!res.ok) throw new Error('Turso HTTP ' + res.status);
+    const data = await res.json();
+    const errors = data.results.filter(function(r) { return r.type === 'error'; });
+    if (errors.length) throw new Error('Turso error: ' + JSON.stringify(errors));
+    return data.results;
+  }
+
+  function rowsToObjects(cols, rows) {
+    return rows.map(function(row) {
+      var obj = {};
+      cols.forEach(function(col, i) { obj[col.name] = row[i]; });
+      return obj;
+    });
+  }
+
+  function now() {
+    var d = new Date();
+    var pad = function(n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
   const api = {
-    list:      ()                    => apiFetch(''),
-    create:    (t,c)                 => apiFetch('', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title:t, category:c}) }),
-    update:    (id, data)            => apiFetch('/'+id, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) }),
-    remove:    (id)                  => apiFetch('/'+id, { method:'DELETE' }),
-    toggle:    (id)                  => apiFetch('/'+id+'/toggle', { method:'PATCH' }),
-    reorder:   (category, ids)       => apiFetch('/reorder', { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({category, ids}) }),
+    list: async function() {
+      var results = await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'SELECT * FROM tasks ORDER BY order_index ASC, id ASC' } },
+        { type: 'close' }
+      ]);
+      var r = results[0].response.result;
+      return rowsToObjects(r.cols, r.rows);
+    },
+
+    create: async function(title, category) {
+      var ts = now();
+      var results = await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'SELECT MAX(order_index) AS m FROM tasks WHERE category = ?', args: [category] } },
+        { type: 'close' }
+      ]);
+      var rows = rowsToObjects(results[0].response.result.cols, results[0].response.result.rows);
+      var nextOrder = (rows[0] && rows[0].m != null) ? rows[0].m + 1 : 0;
+
+      results = await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'INSERT INTO tasks (title, description, category, order_index, created_at) VALUES (?, ?, ?, ?, ?)', args: [title, '', category, nextOrder, ts] } },
+        { type: 'execute', stmt: { sql: 'SELECT last_insert_rowid() AS id' } },
+        { type: 'close' }
+      ]);
+      var newId = rowsToObjects(results[1].response.result.cols, results[1].response.result.rows)[0].id;
+
+      results = await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'SELECT * FROM tasks WHERE id = ?', args: [newId] } },
+        { type: 'close' }
+      ]);
+      return rowsToObjects(results[0].response.result.cols, results[0].response.result.rows)[0];
+    },
+
+    update: async function(id, data) {
+      var existing = await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'SELECT * FROM tasks WHERE id = ?', args: [id] } },
+        { type: 'close' }
+      ]);
+      var rows = rowsToObjects(existing[0].response.result.cols, existing[0].response.result.rows);
+      if (!rows.length) throw new Error('任务不存在');
+      var t = rows[0];
+
+      var title = data.title !== undefined ? data.title : t.title;
+      var description = data.description !== undefined ? data.description : t.description;
+      var category = data.category !== undefined ? data.category : t.category;
+      var completed = data.completed !== undefined ? (data.completed ? 1 : 0) : t.completed;
+
+      await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'UPDATE tasks SET title = ?, description = ?, category = ?, completed = ? WHERE id = ?', args: [title, description, category, completed, id] } },
+        { type: 'close' }
+      ]);
+
+      var results = await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'SELECT * FROM tasks WHERE id = ?', args: [id] } },
+        { type: 'close' }
+      ]);
+      return rowsToObjects(results[0].response.result.cols, results[0].response.result.rows)[0];
+    },
+
+    remove: async function(id) {
+      await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'DELETE FROM tasks WHERE id = ?', args: [id] } },
+        { type: 'close' }
+      ]);
+      return { success: true };
+    },
+
+    toggle: async function(id) {
+      var existing = await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'SELECT * FROM tasks WHERE id = ?', args: [id] } },
+        { type: 'close' }
+      ]);
+      var rows = rowsToObjects(existing[0].response.result.cols, existing[0].response.result.rows);
+      if (!rows.length) throw new Error('任务不存在');
+      var newCompleted = rows[0].completed ? 0 : 1;
+
+      await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'UPDATE tasks SET completed = ? WHERE id = ?', args: [newCompleted, id] } },
+        { type: 'close' }
+      ]);
+
+      var results = await tursoPipeline([
+        { type: 'execute', stmt: { sql: 'SELECT * FROM tasks WHERE id = ?', args: [id] } },
+        { type: 'close' }
+      ]);
+      return rowsToObjects(results[0].response.result.cols, results[0].response.result.rows)[0];
+    },
+
+    reorder: async function(category, ids) {
+      for (var i = 0; i < ids.length; i++) {
+        await tursoPipeline([
+          { type: 'execute', stmt: { sql: 'UPDATE tasks SET order_index = ? WHERE id = ? AND category = ?', args: [i, ids[i], category] } },
+          { type: 'close' }
+        ]);
+      }
+      return api.list();
+    },
   };
 
   // ═══════════════ Render ═══════════════
@@ -551,7 +662,7 @@
       var tasks = await api.list();
       renderTasks(tasks);
     } catch (e) {
-      toast('无法连接服务器，请确认后台已启动', true);
+      toast('无法连接云数据库，请检查网络', true);
     }
   }
 
@@ -567,7 +678,7 @@
 
   // ═══════════════ PWA ═══════════════
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').then(function (reg) {
+    navigator.serviceWorker.register('./sw.js').then(function (reg) {
       console.log('SW registered:', reg.scope);
     }).catch(function (err) {
       console.log('SW failed:', err);
