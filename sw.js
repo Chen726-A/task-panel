@@ -6,10 +6,10 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE).then(cache => {
       return cache.addAll([
-        '/',
-        '/index.html',
-        '/manifest.json',
-        '/icon.svg'
+        './',
+        './index.html',
+        './manifest.json',
+        './icon.svg'
       ]);
     })
   );
@@ -50,7 +50,7 @@ self.addEventListener('fetch', event => {
       }).catch(() => {
         // 网络失败，对于 HTML 请求返回缓存首页（离线兜底）
         if (event.request.headers.get('accept').includes('text/html')) {
-          return caches.match('/');
+          return caches.match('./');
         }
         return new Response('离线状态，请连接网络后重试', { status: 503 });
       });
